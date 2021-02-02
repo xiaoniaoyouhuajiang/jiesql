@@ -8,3 +8,7 @@
 
 * 只支持最简单的列索引，插入以及建表
 * 存储用的是go的二维数组
+
+---
+
+![image-20201208161045731](C:\Users\pp\AppData\Roaming\Typora\typora-user-images\image-20201208161045731.png)

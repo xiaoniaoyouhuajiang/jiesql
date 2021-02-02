@@ -31,10 +31,10 @@ func expectToken(tokens []*token, cursor uint, t token) bool {
 // 出现问题时，打印出出问题的token以及方位。
 func helpMessage(tokens []*token, cursor uint, msg string) {
 	var c *token
-	if cursor < uint(len(tokens)) {
-		c = tokens[cursor]
+	if cursor+1 < uint(len(tokens)) {
+		c = tokens[cursor+1]
 	} else {
-		c = tokens[cursor-1]
+		c = tokens[cursor]
 	}
 
 	fmt.Printf("[%d,%d]: %s, got: %s\n", c.loc.line, c.loc.col, msg, c.value)
@@ -136,7 +136,7 @@ func parseSelectStatement(tokens []*token, initialCursor uint, delimiter token) 
 	if expectToken(tokens, cursor, tokenFromKeyword(fromKeyword)) {
 		cursor++
 
-		from, newCursor, ok := parseToken(tokens, cursor, identifierKind)
+		from, newCursor, ok := parseTokenKind(tokens, cursor, identifierKind)
 		if !ok {
 			helpMessage(tokens, cursor, "Expected FROM token")
 			return nil, initialCursor, false
@@ -151,7 +151,26 @@ func parseSelectStatement(tokens []*token, initialCursor uint, delimiter token) 
 }
 
 // 解析一个token
-func parseToken(tokens []*token, initialCursor uint, kind tokenKind) (*token, uint, bool) {
+// 注意最早版本该函数的第三个参数是tokenKind类型，在版本二中重构了部分的代码
+// 版本二中的末尾参数直接就是一个待确认的token，引来了一大波改动
+func parseToken(tokens []*token, initialCursor uint, t token) (*token, uint, bool) {
+	cursor := initialCursor
+
+	// 如果当前游标超出了初始游标的——代表有问题
+	if cursor >= uint(len(tokens)) {
+		return nil, initialCursor, false
+	}
+
+	current := tokens[cursor]
+	if t.equals(current) {
+		return current, cursor + 1, true
+	}
+
+	return nil, initialCursor, false
+}
+
+// 如果参数中的tokenKind和调用时碰到的一样，就会consume掉当前token
+func parseTokenKind(tokens []*token, initialCursor uint, kind tokenKind) (*token, uint, bool) {
 	cursor := initialCursor
 
 	if cursor >= uint(len(tokens)) {
@@ -209,7 +228,8 @@ outer:
 
 	return &exps, cursor, true
 }
-
+/*
+原版parseExpression
 func parseExpression(tokens []*token, initialCursor uint, _ token) (*expression, uint, bool) {
 	cursor := initialCursor
 
@@ -226,6 +246,41 @@ func parseExpression(tokens []*token, initialCursor uint, _ token) (*expression,
 
 	return nil, initialCursor, false
 }
+*/
+
+// 新版，支持中缀运算符，继而使用Pratt parsing
+func parseExpression(tokens []*token, initialCursor uint, delimiters []token, minBp uint) (*expression, nit, bool) {
+	cursor := identifierKind
+
+	var exp *expression
+	_, newCursor, ok := parseToken(tokens, cursor, tokenFromSymbol(leftParenSymbol))
+	if ok {
+		cursor = newCursor
+		rightParenToken := tokenFromSymbol(rightParenSymbol)
+
+		exp, cursor, ok = parseExpression(tokens, cursor, append(delimiters, rightParenToken), minBp)
+		if !ok {
+			helpMessage(tokens, cursor, "Expected expression after opening paren")
+			return nil initialCursor, false
+		}
+
+		_, cursor, ok = parseToken(tokens, cursor, rightParenToken)
+		if !ok {
+			helpMessage(tokens, cursor, "Expected closing paren")
+			return nil, initialCursor, false
+		}
+	} else {
+		exp, cursor, ok = parseLiteralExpression(tokens, cursor)
+		if !ok {
+			return nil, initialCursor, false
+		}
+	}
+	
+	//
+
+	return exp, cursor, true
+}
+
 
 /*
 Insert mode

@@ -7,6 +7,18 @@ type Ast struct {
 type AstKind uint
 
 const (
+    literalKind expressionKind
+    binaryKind
+)
+
+type binaryExpression struct {
+    a  expression
+    b  expression
+    op token
+}
+
+
+const (
 	SelectKind AstKind = iota
 	CreateTableKind
 	InsertKind
@@ -31,9 +43,11 @@ const (
 )
 
 type expression struct {
-	literal *token
-	kind    expressionKind
+    literal *token
+    binary  *binaryExpression
+    kind    expressionKind
 }
+
 
 type columnDefinition struct {
 	name     token
