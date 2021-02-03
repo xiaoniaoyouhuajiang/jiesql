@@ -117,14 +117,16 @@ func parseStatement(tokens []*token, initialCursor uint, delimiter token) (*Stat
 */
 // 切记辅助函数是需要返回新的 cursor来让parser（parse函数）进行定位
 func parseSelectStatement(tokens []*token, initialCursor uint, delimiter token) (*SelectStatement, uint, bool) {
+	var ok bool
 	cursor := initialCursor
-	if !expectToken(tokens, cursor, tokenFromKeyword(selectKeyword)) {
+	_, cursor, ok = parseToken(tokens, cursor, tokenFromKeyword(selectKeyword))
+	if !ok {
 		return nil, initialCursor, false
 	}
-	cursor++
 
 	slct := SelectStatement{}
 
+	fromToken := tokenFromKeyword(fromKeyword)
 	exps, newCursor, ok := parseExpressions(tokens, cursor, []token{tokenFromKeyword(fromKeyword), delimiter})
 	if !ok {
 		return nil, initialCursor, false
@@ -148,6 +150,66 @@ func parseSelectStatement(tokens []*token, initialCursor uint, delimiter token) 
 	}
 
 	return &slct, cursor, true
+}
+
+func parseSelectItem(tokens []*token, initialCursor uint, delimiters []token) (*[]*selectItem, uint, bool) {
+	cursor := initialCursor
+
+	s := []*selectItem{}
+outer:
+	for {
+		if cursor >= uint(len(tokens)) {
+			return nil, initialCursor, false
+		}
+
+		current := tokens[cursor]
+		for _, delimiter := range delimiters {
+			if delimiter.equals(current) {
+				break outer
+			}
+		}
+
+		if len(s) > 0 {
+			if !expectToken(tokens, cursor, tokenFromSymbol(commaSymbol)) {
+				helpMessage(tokens, cursor, "Expected comma")
+				return nil, initialCursor, false
+			}
+
+			cursor++
+		}
+
+		var si selectItem
+		if expectToken(tokens, cursor, tokenFromSymbol(asteriskSymbol)) {
+			si = selectItem{asterisk: true}
+			cursor++
+		} else {
+			exp, newCursor, ok := parseExpression(tokens, cursor, tokenFromSymbol(commaSymbol))
+			if !ok {
+				helpMessage(tokens, cursor, "Expected expression")
+				return nil, initialCursor, false
+			}
+
+			cursor = newCursor
+			si.exp = exp
+
+			if expectToken(tokens, cursor, tokenFromKeyword(asKeyword)) {
+				cursor++
+
+				id, newCursor, ok := parseToken(tokens, cursor, identifierKind)
+				if !ok {
+					helpMessage(tokens, cursor, "Expected identifier after AS")
+					return nil, initialCursor, false
+				}
+
+				cursor = newCursor
+				si.as = id
+			}
+		}
+
+		s = append(s, &si)
+	}
+
+	return &s, cursor, true
 }
 
 // 解析一个token
@@ -187,11 +249,11 @@ func parseTokenKind(tokens []*token, initialCursor uint, kind tokenKind) (*token
 
 // parseExpressions的第三个参数是[]token, 用来装分隔符的一个容器，遇到任意其中分隔符都要break
 // 初值部分用了parseExpression这个接口，注意这个不是递归调用
-func parseExpressions(tokens []*token, initialCursor uint, delimiters []token) (*[]*expression, uint, bool) {
+func parseExpressions(tokens []*token, initialCursor uint, delimiter token) (*[]*expression, uint, bool) {
 	cursor := initialCursor
 
 	exps := []*expression{}
-outer:
+
 	for {
 		if cursor >= uint(len(tokens)) {
 			return nil, initialCursor, false
@@ -199,24 +261,22 @@ outer:
 
 		// Look for delimiter
 		current := tokens[cursor]
-		for _, delimiter := range delimiters {
-			if delimiter.equals(current) {
-				break outer
-			}
+		if delimiter.equals(current) {
+			break
 		}
 
-		// Look for comma
+		// 对逗号的处理(这一步已经交由parseToken来处理)
 		if len(exps) > 0 {
-			if !expectToken(tokens, cursor, tokenFromSymbol(commaSymbol)) {
+			var ok bool
+			_, cursor, ok = parseToken(tokens, cursor, tokenFromSymbol(commaSymbol))
+			if !ok {
 				helpMessage(tokens, cursor, "Expected comma")
 				return nil, initialCursor, false
 			}
-
-			cursor++
 		}
 
 		// Look for expression
-		exp, newCursor, ok := parseExpression(tokens, cursor, tokenFromSymbol(commaSymbol))
+		exp, newCursor, ok := parseExpression(tokens, cursor, []token{tokenFromSymbol(commaSymbol), tokenFromSymbol(rightParenSymbol)}, 0)
 		if !ok {
 			helpMessage(tokens, cursor, "Expected expression")
 			return nil, initialCursor, false
@@ -228,6 +288,7 @@ outer:
 
 	return &exps, cursor, true
 }
+
 /*
 原版parseExpression
 func parseExpression(tokens []*token, initialCursor uint, _ token) (*expression, uint, bool) {
@@ -249,8 +310,8 @@ func parseExpression(tokens []*token, initialCursor uint, _ token) (*expression,
 */
 
 // 新版，支持中缀运算符，继而使用Pratt parsing
-func parseExpression(tokens []*token, initialCursor uint, delimiters []token, minBp uint) (*expression, nit, bool) {
-	cursor := identifierKind
+func parseExpression(tokens []*token, initialCursor uint, delimiters []token, minBp uint) (*expression, uint, bool) {
+	cursor := initialCursor
 
 	var exp *expression
 	_, newCursor, ok := parseToken(tokens, cursor, tokenFromSymbol(leftParenSymbol))
@@ -261,7 +322,7 @@ func parseExpression(tokens []*token, initialCursor uint, delimiters []token, mi
 		exp, cursor, ok = parseExpression(tokens, cursor, append(delimiters, rightParenToken), minBp)
 		if !ok {
 			helpMessage(tokens, cursor, "Expected expression after opening paren")
-			return nil initialCursor, false
+			return nil, initialCursor, false
 		}
 
 		_, cursor, ok = parseToken(tokens, cursor, rightParenToken)
@@ -275,12 +336,93 @@ func parseExpression(tokens []*token, initialCursor uint, delimiters []token, mi
 			return nil, initialCursor, false
 		}
 	}
-	
+
 	//
+	lastCursor := cursor
+outer:
+	for cursor < uint(len(tokens)) {
+		for _, d := range delimiters {
+			_, _, ok = parseToken(tokens, cursor, d)
+			if ok {
+				break outer
+			}
+		}
+
+		// binary operation的token列表
+		binOps := []token{
+			tokenFromKeyword(andKeyword),
+			tokenFromKeyword(orKeyword),
+			tokenFromKeyword(eqSymbol),
+			tokenFromKeyword(neqSymbol),
+			tokenFromKeyword(concatSymbol),
+			tokenFromKeyword(plusSymbol),
+		}
+
+		var op *token = nil
+		for _, bo := range binOps {
+			var t *token
+			t, cursor, ok = parseToken(tokens, cursor, bo)
+			if ok {
+				op = t
+				break
+			}
+		}
+
+		if op == nil {
+			helpMessage(tokens, cursor, "Expected binary operation")
+			return nil, initialCursor, false
+		}
+
+		bp := op.bindingPower()
+		if bp < minBp {
+			cursor = lastCursor
+			break
+		}
+
+		b, newCursor, ok := parseExpression(tokens, cursor, delimiters, bp)
+		if !ok {
+			helpMessage(tokens, cursor, "Expected right operand")
+			return nil, initialCursor, false
+		}
+		exp = &expression{
+			binary: &binaryExpression{
+				*exp,
+				*b,
+				*op,
+			},
+			kind: binaryKind,
+		}
+		cursor = newCursor
+		lastCursor = cursor
+	}
 
 	return exp, cursor, true
 }
 
+func (t token) bindingPower() uint {
+	switch t.kind {
+	case keywordKind:
+		switch keyword(t.value) {
+		case andKeyword:
+			fallthrough
+		case orKeyword:
+			return 1
+		}
+	case symbolKind:
+		switch symbol(t.value) {
+		case eqSymbol:
+			fallthrough
+		case neqSymbol:
+			fallthrough
+		case concatSymbol:
+			fallthrough
+		case plusSymbol:
+			return 3
+		}
+	}
+
+	return 0
+}
 
 /*
 Insert mode
